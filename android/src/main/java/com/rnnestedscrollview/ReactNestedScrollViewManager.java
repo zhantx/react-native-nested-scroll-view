@@ -151,6 +151,7 @@ public class ReactNestedScrollViewManager
   public void scrollTo(
       ReactNestedScrollView scrollView, ReactScrollViewCommandHelper.ScrollToCommandData data) {
     if (data.mAnimated) {
+      scrollView.fling(0);
       scrollView.smoothScrollTo(data.mDestX, data.mDestY);
     } else {
       scrollView.scrollTo(data.mDestX, data.mDestY);
@@ -212,6 +213,7 @@ public class ReactNestedScrollViewManager
     int bottom =
       scrollView.getChildAt(0).getHeight() + scrollView.getPaddingBottom();
     if (data.mAnimated) {
+      scrollView.fling(0);
       scrollView.smoothScrollTo(scrollView.getScrollX(), bottom);
     } else {
       scrollView.scrollTo(scrollView.getScrollX(), bottom);
