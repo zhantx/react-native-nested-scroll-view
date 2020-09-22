@@ -13,8 +13,8 @@ import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
-import android.support.v4.widget.NestedScrollView;
-import android.support.v4.view.ViewCompat;
+import androidx.core.widget.NestedScrollView;
+import androidx.core.view.ViewCompat;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
@@ -61,9 +61,7 @@ public class ReactNestedScrollView extends NestedScrollView implements ReactClip
   private boolean mActivelyScrolling;
   private @Nullable Rect mClippingRect;
   private @Nullable String mOverflow = ViewProps.HIDDEN;
-  private boolean mDoneFlinging;
   private boolean mDragging;
-  private boolean mFlinging;
   private boolean mPagingEnabled = false;
   private @Nullable Runnable mPostTouchRunnable;
   private boolean mRemoveClippedSubviews;
@@ -76,6 +74,8 @@ public class ReactNestedScrollView extends NestedScrollView implements ReactClip
   private int mSnapInterval = 0;
   private float mDecelerationRate = 0.985f;
   private @Nullable List<Integer> mSnapOffsets;
+  private boolean mSnapToStart = true;
+  private boolean mSnapToEnd = true;
   private View mContentView;
   private ReactViewBackgroundManager mReactBackgroundManager;
 
@@ -162,6 +162,13 @@ public class ReactNestedScrollView extends NestedScrollView implements ReactClip
 
   public void setSnapOffsets(List<Integer> snapOffsets) {
     mSnapOffsets = snapOffsets;
+  }
+
+  public void setSnapToStart(boolean snapToStart) {
+    mSnapToStart = snapToStart;
+  }
+  public void setSnapToEnd(boolean snapToEnd) {
+    mSnapToEnd = snapToEnd;
   }
 
   public void flashScrollIndicators() {
@@ -310,8 +317,21 @@ public class ReactNestedScrollView extends NestedScrollView implements ReactClip
 
   @Override
   public void fling(int velocityY) {
+    // Workaround.
+    // On Android P if a ScrollView is inverted, we will get a wrong sign for
+    // velocityY (see https://issuetracker.google.com/issues/112385925). 
+    // At the same time, mOnScrollDispatchHelper tracks the correct velocity direction. 
+    //
+    // Hence, we can use the absolute value from whatever the OS gives
+    // us and use the sign of what mOnScrollDispatchHelper has tracked.
+    float signum = Math.signum(mOnScrollDispatchHelper.getYFlingVelocity());
+    if (signum == 0) {
+      signum = Math.signum(velocityY);
+    }
+    final int correctedVelocityY = (int)(Math.abs(velocityY) * signum);
+
     if (mPagingEnabled) {
-      flingAndSnap(velocityY);
+      flingAndSnap(correctedVelocityY);
     } else if (mScroller != null) {
       // FB SCROLLVIEW CHANGE
 
@@ -324,26 +344,29 @@ public class ReactNestedScrollView extends NestedScrollView implements ReactClip
       int scrollWindowHeight = getHeight() - getPaddingBottom() - getPaddingTop();
 
       mScroller.fling(
-        getScrollX(),
-        getScrollY(),
-        0,
-        velocityY,
-        0,
-        0,
-        0,
-        Integer.MAX_VALUE,
-        0,
-        scrollWindowHeight / 2);
+        getScrollX(), // startX
+        getScrollY(), // startY
+        0, // velocityX
+        correctedVelocityY, // velocityY
+        0, // minX
+        0, // maxX
+        0, // minY
+        Integer.MAX_VALUE, // maxY
+        0, // overX
+        scrollWindowHeight / 2 // overY
+      );
 
       postInvalidateOnAnimation();
 
-      super.fling(velocityY);
+      // RNNestedScrollView CHANGE (Should we use correctedVelocityY here as well?)
+      // Fixed fling issue on support library 26 (see issue https://github.com/cesardeazevedo/react-native-nested-scroll-view/issues/16)
+      super.fling(correctedVelocityY);
 
       // END FB SCROLLVIEW CHANGE
     } else {
-      super.fling(velocityY);
+      super.fling(correctedVelocityY);
     }
-    handlePostTouchScrolling(0, velocityY);
+    handlePostTouchScrolling(0, correctedVelocityY);
   }
 
   private void enableFpsListener() {
@@ -576,10 +599,29 @@ public class ReactNestedScrollView extends NestedScrollView implements ReactClip
       ? smallerOffset
       : largerOffset;
 
-    // Chose the correct snap offset based on velocity
-    if (velocityY > 0) {
+    // if scrolling after the last snap offset and snapping to the
+    // end of the list is disabled, then we allow free scrolling
+    if (!mSnapToEnd && targetOffset >= lastOffset) {
+      if (getScrollY() >= lastOffset) {
+        // free scrolling
+      } else {
+        // snap to end
+        targetOffset = lastOffset;
+      }
+    } else if (!mSnapToStart && targetOffset <= firstOffset) {
+      if (getScrollY() <= firstOffset) {
+        // free scrolling
+      } else {
+        // snap to beginning
+        targetOffset = firstOffset;
+      }
+    } else if (velocityY > 0) {
+      // when snapping velocity can feel sluggish for slow swipes
+      velocityY += (int) ((largerOffset - targetOffset) * 10.0);
       targetOffset = largerOffset;
     } else if (velocityY < 0) {
+      // when snapping velocity can feel sluggish for slow swipes
+      velocityY -= (int) ((targetOffset - smallerOffset) * 10.0);
       targetOffset = smallerOffset;
     } else {
       targetOffset = nearestOffset;
@@ -635,7 +677,7 @@ public class ReactNestedScrollView extends NestedScrollView implements ReactClip
 
   @Override
   protected void onOverScrolled(int scrollX, int scrollY, boolean clampedX, boolean clampedY) {
-    if (mScroller != null) {
+    if (mScroller != null && mContentView != null) {
       // FB SCROLLVIEW CHANGE
 
       // This is part two of the reimplementation of fling to fix the bounce-back bug. See #fling() for
